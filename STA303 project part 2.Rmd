@@ -1,0 +1,261 @@
+---
+title: "Data Analysis Report on NBA All-Star Players"
+author: "Seong Pyeon"
+date: "`r Sys.Date()`"
+output: pdf_document
+---
+
+
+**Introduction**
+
+
+During the middle of the NBA regular season, an All-Star event is held where fans, media, and players vote for their favorite or most outstanding players from the Western and Eastern conferences to be included in the All-Star roster. This roster is composed based on the exceptional basketball skills of the players. The purpose of this report is to analyze players from the perspective of a sports analyst and to identify the attractive factors that increase the likelihood of being selected as an All-Star. We focus only on in-game performance statistics from the 2014-2015 season. The primary question we aim to address is "Which in-game statistics have the greatest influence on a player's probability of being selected as an All-Star?" According to research papers, a player's performance is significantly influenced by biological advantages such as league experience, height, weight, and age. Additionally, a player's offensive and defensive contributions play a significant role in the probability of being selected as an All-Star. We will analyze game performance statistics to verify if they align with these predictions. However, since the model does not consider variables such as experience, age, height, etc., there may be flaws in the model. This is because variables such as age and height can affect a player's ability to score, block shots, and pass. 
+\newline
+\newline
+
+**Methods**
+
+The data used to perform this data analysis is the NBA player statistics from the 2014-2015 season sourced from Kaggle (Goldstein et al., 2016). This dataset originally consisted of 34 variables and 490 observations. After only selecting out the in-game performance variables such as number of points or assists, we reduced it down to 8 variables. Those 8 variables consists of the player's name and their offensive and defensive stats such as their shooting efficiency and the number of blocks they have. The main problem with this dataset is that it does not show per-game statistics. As a sports analyst, it is also very important to look at their per-game statistics such as points per-game. Also, a binary variable that determined whether the player was an All-Star or not was not present. Therefore, all these variables had to be newly created to be included in the model in the future.
+
+In the process of building the model, we analyze potential issues such as outliers, confounding variables, and multicollinearity among predictor variables. We can determine which model is better using AIC or BIC stepwise selection or using LRT. Additionally, we can use residual diagnostics to check for homoscedasticity, model fit, and other potential issues. We can use the \texttt{dfbetas()} function to see how outliers affect each predictor variable and evaluate the performance of the final model using LOOCV and ROC curves.
+\newline
+\newline
+\newline
+\newline
+
+**Results**
+\newline
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+library(epiDisplay)
+library(knitr)
+library(broom)
+library(cowplot)
+library(gridExtra)
+library(ggplot2)
+```
+```{r, echo=FALSE}
+
+# 누락된 데이터 테이블을 계산하고 출력하는 코드...
+player_data <- read.csv('players_stats.csv')
+missing <- sapply(player_data, function(x)sum(is.na(x)))
+```
+The data analysis reveals that 68 observations are missing for variables such as age, weight, height, BMI, but since these are not in-game performance statistics, it is not a significant issue. The variables we need are PTS, FG%, 3P%, FT%, REB, AST, STL, BLK, which represent the player's offensive and defensive contributions. We need to manipulate these variables to express them as per-game statistics.
+\newline
+
+```{r, echo=FALSE, fig.cap="Boxplots of Predictor Variables", fig.show='hold'}
+player_data$PPG = player_data$PTS/player_data$Games.Played
+player_data$APG = player_data$AST/player_data$Games.Played
+player_data$RPG = player_data$REB/player_data$Games.Played
+player_data$BPG = player_data$BLK/player_data$Games.Played
+player_data$SPG = player_data$STL/player_data$Games.Played
+
+stat_coloumns = c('Name','FG.', 'X3P.', 'FT.', 'PPG', 'APG', 'RPG', 'BPG', 'SPG', 'AllStar')
+new_df = player_data[, stat_coloumns]
+round_numbers = c('FG.', 'X3P.', 'FT.', 'PPG', 'APG', 'RPG', 'BPG', 'SPG')
+new_df2 = round(new_df[,round_numbers], digits = 1)
+final_df = cbind(new_df2, new_df$AllStar)
+names(final_df)[names(final_df) == "new_df$AllStar"] <- "AllStar"
+kable(head(final_df))
+```
+
+First, we can look at the distribution and the number of outliers of all 8 predictor variables by creating their box plots:
+
+```{r, echo=FALSE, fig.cap="Boxplots of Predictor Variables", fig.show='hold'}
+par(mfrow=c(2,4))
+boxplot(final_df$PPG, main = "PPG")
+boxplot(final_df$APG, main = "APG")
+boxplot(final_df$RPG, main = "RPG")
+boxplot(final_df$BPG, main = "BPG")
+boxplot(final_df$SPG, main = "SPG")
+boxplot(final_df$FG., main = "FG%")
+boxplot(final_df$X3P., main = "3P%")
+boxplot(final_df$FT., main = "FT%")
+boxplot(final_df$AllStar, main = "All-Stars")
+par(family = 'serif')
+```
+\newline
+\newline
+Introducing the predictor variables, they are Points per-game (PPG), Assists per-game, Rebounds per-game, Blocks per-game (BPG), Steals per-game (SPG), Field Goal Percentage (FG%), Three-point Percentage (3P%), and Free Throw Percentage (FT%). By looking at the box-plots we created, we can see that the non-percentage statistics, from PPG to SPG, the outliers are all on the upper side.The percentage statistics seem to be distributed much more evenly. For non-percentage variables (PPG, APG, BPG, RPG, SPG), the outliers are all high values. FG% and 3P% have somewhat equal distribution. Lastly, FT% has all outliers as low values. Looking at the All-Star distribution bar-plot, we see that there are much more non-All-Star players compared to All-Star players, indicating that the All-Star players are outliers in the NBA league themselves. 
+
+```{r, echo=FALSE, include=FALSE}
+initial_model <- glm(AllStar ~ PPG+APG+RPG+BPG+SPG+FG.+X3P.+FT., family = binomial(link=logit), data = final_df)
+tidy(initial_model)
+```
+Upon examining the summary table of the initial model, it was found that rebounds per game and steals were not significant. These are expected not to be included in the final model. Now, using AIC and BIC methods, we can derive two final models.
+
+```{r, echo=FALSE, include=FALSE}
+sel.var.aic <- step(initial_model, trace = 0, k = 2, direction = "both") 
+select_var_aic<-attr(terms(sel.var.aic), "term.labels")   
+select_var_aic
+```
+```{r, echo=FALSE, include=FALSE}
+sel.var.bic <- step(initial_model, trace = 0, k = log(nrow(final_df)), direction = "both") 
+select_var_bic<-attr(terms(sel.var.bic), "term.labels")   
+select_var_bic
+```
+Using the step-wise method for both AIC and BIC, we get two models that have minimized AIC and BIC. Since we have two final models based off of stepwise selection of AIC and BIC, we can use LRT to determine which model is superior over the other:
+\newline
+
+```{r,echo=FALSE, message=FALSE, warning = FALSE}
+AIC.final <- glm(AllStar ~ PPG + APG + BPG + FG. + X3P. + FT., family = binomial(link=logit), data = final_df)
+BIC.final <- glm(AllStar ~ PPG + APG + BPG + X3P., family = binomial(link=logit), data = final_df)
+tidy(AIC.final)
+tidy(BIC.final)
+```
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+lrtest(AIC.final, BIC.final)
+```
+After conducting the Likelihood Ratio Test, we see that we get a p-value of about 0.022. This indicates that the more complex model provides a better fit statistically. In this case, the AIC final model is more complex because it has more variables. Therefore, we can guess that the AIC final model has a better fit than the BIC final model. 
+\newline
+For further analysis we will look at the \texttt{dfbetas()} of both models:
+
+```{r, echo=FALSE}
+df.final <- dfbetas(AIC.final)
+
+par(mfrow=c(1,2))
+plot(final_df$PPG, df.final[,1], xlab='Points Per Game', 
+     ylab='dfbeta', main = "AIC PPG")
+lines(lowess(final_df$PPG, df.final[,1]), lwd=2, col='blue')
+abline(h=0, lty='dotted')
+abline(h=-2/sqrt(nrow(df.final)), lty='dotted')
+abline(h=2/sqrt(nrow(df.final)), lty='dotted')
+
+df.final2 <- dfbetas(BIC.final)
+plot(final_df$PPG, df.final2[,1], xlab='Points Per Game', 
+     ylab='dfbeta', main = "BIC PPG")
+lines(lowess(final_df$PPG, df.final2[,1]), lwd=2, col='blue')
+abline(h=0, lty='dotted')
+abline(h=-2/sqrt(nrow(df.final)), lty='dotted')
+abline(h=2/sqrt(nrow(df.final)), lty='dotted')
+```
+
+The dfbetas() function calculates how the coefficient estimates of the model change when an observation is omitted. If the model is stable, the estimated dfbeta values should not vary significantly. When we used dfbetas() for PPG in both models, we found that the dfbeta of the BIC final model varies more than the AIC final model. This indicates that the BIC model is more sensitive to outliers and less stable, meaning the coefficient estimates change too much when certain observations are omitted.
+
+Next, we can look at the deviance residuals of all the predictor variables of each model:
+
+```{r, echo=FALSE}
+AIC.res.dev <- residuals(AIC.final, type = "deviance")
+BIC.res.dev <- residuals(BIC.final, type = "deviance")
+par(mfrow=c(2,2))
+
+plot(final_df$PPG, AIC.res.dev, xlab='Points Per-Game', 
+     ylab='Deviance Residuals', main='AIC PPG DR')
+lines(lowess(final_df$PPG, AIC.res.dev), lwd=2, col='blue')
+abline(h=0, lty='dotted')
+
+plot(final_df$APG, AIC.res.dev, xlab='Assists Per-Game', 
+     ylab='Deviance Residuals', main='AIC APG DR')
+lines(lowess(final_df$APG, AIC.res.dev), lwd=2, col='blue')
+abline(h=0, lty='dotted')
+
+plot(final_df$PPG, BIC.res.dev, xlab='Points Per-Game', 
+     ylab='Deviance Residuals', main = 'BIC PPG DR')
+lines(lowess(final_df$PPG, BIC.res.dev), lwd=2, col='blue')
+abline(h=0, lty='dotted')
+
+plot(final_df$APG, BIC.res.dev, xlab='Assists Per-Game', 
+     ylab='Deviance Residuals', main='BIC APG DR')
+lines(lowess(final_df$APG, BIC.res.dev), lwd=2, col='blue')
+abline(h=0, lty='dotted')
+```
+
+We can see that the residuals of all predictor variables are relatively evenly distributed and converge towards 0 for AIC deviance residuals. The residual distributions of the predictor variables in the BIC model are all randomly distributed and converge around -1, indicating good homoscedasticity.
+\newline
+
+With all these model analyses, we can conclude that the model obtained from the stepwise AIC method is the best glm model for the response variable. Now, we can use the Leave One Out Cross Validation method and the ROC curves to show how good the model is at predicting the response variable.
+
+```{r, echo=FALSE,message=FALSE, warning = FALSE}
+library(rms)
+AllStar = final_df$AllStar
+
+lrm.final <- lrm(AllStar ~ ., data = final_df[,which(colnames(final_df) %in% c(select_var_aic, "All Star"))], x =TRUE, y = TRUE, model= T)
+cross.calib <- calibrate(lrm.final, method="crossvalidation", B=10) # model calibration
+plot(cross.calib, las=1, xlab = "Predicted Probability")
+```
+
+This graph shows the result of the LOOCV. We can see that the bias-corrected line is closer to the ideal line compared to the ideal line, which may indicate that the cross-validation method helps to evaluate the model's performance better. Although the bias-corrected line diverges away from the ideal line as predicted probability approaches 1, it still stays very close until about 0.7, showing that the model's predicted probability generally reflects the actual probability well. We can validate it by the value of the mean absolute error, which is 0.014. The sample size of 490 is quite sufficiently large, but we cannot be too sure about how well this model can perform on player statistics in different years.
+
+```{r, echo=FALSE, message=FALSE, warning = FALSE}
+library(pROC)
+p <- predict(lrm.final, type = "fitted")
+
+roc_logit <- roc(AllStar ~ p)
+## The True Positive Rate ##
+TPR <- roc_logit$sensitivities
+## The False Positive Rate ##
+FPR <- 1 - roc_logit$specificities
+
+plot(FPR, TPR, xlim = c(0,1), ylim = c(0,1), type = 'l', lty = 1, lwd = 2,col = 'red')
+abline(a = 0, b = 1, lty = 2, col = 'blue')
+text(0.7,0.4,label = paste("AUC = ", round(auc(roc_logit),2)))
+
+auc(roc_logit)
+```
+
+The value of AUC is 0.99, which is very high. This indicates that the model is either very over-fitting or very good at predicting the response variable. The ROC curve shows that the True Positive Rate is very high, which the False Positive Rate is very low. The ROC is extremely close to the top-left side of the box, which implies that the model is extremely good at detecting true positives. This model may seem too perfect, and it shows sign that it is over-fitting. If that is the case, than the model is too biased towards this specific data set, which is a problem, because it may show problems when different data sets are input into the model.
+
+
+**Discussion**
+
+Our original research question was "Which in-game statistic influences the chance of a player being selected as an All-Star the most?". To answer this question, we completed multiple steps to create the best model that is able to predict a player's probability of being selected as an All-Star, based on their in-game performances. We initially had a model with eight predictor variables. However, after conducting the stepwise selection method, LRT test, and observing the potential models' deviance residuals and dfbetas, we were able to come up with the final model which contained 6 predictor variables. Hence, the equation of the model looks like: $\log\left(\frac{p}{1-p}\right) = -31.48597 + 0.39823 PPG + 0.47408 APG + 2.12204 BPG + 0.15708FG% + 0.078723P% + 0.12653FT%$. BPG has the greatest impact when predicting the All-Star status of a player. With one unit increase in blocks per-game, the log odds increase by about 2.122, which shows significant positive impact on the probability of a player being selected as an All-Star. In other words, the odds of a player being selected as an All-Star increases by $e^{2.122} = 8.348$. However, the main concern is that when observing the ROC curve, the AUC value is 0.99 and ROC curve is way too close to the upper triangle of the box, which may indicate overfitting.
+\newline
+\newline
+\newline
+\newline
+\newline
+\newline
+\newline
+\newline
+
+**Reference**
+
+Albert, Alberto Arteta, et al. “A Hybrid Machine Learning Model for Predicting USA NBA All-Stars.” MDPI, Multidisciplinary Digital Publishing Institute, 29 Dec. 2021, www.mdpi.com/2079-9292/11/1/97. 
+
+G. Soliman, A. El-Nabawy, A. Misbah and S. Eldawlatly, "Predicting all star player in the national basketball association using random forest," 2017 Intelligent Systems Conference (IntelliSys), London, UK, 2017, pp. 706-713, doi: 10.1109/IntelliSys.2017.8324371. keywords: {Games;Data models;Data mining;Fans;Measurement;Business;Intelligent systems;Random forest;CRISP-DM;NBA;sports},
+
+Evans, B. A. (2018). From college to the NBA: what determines a player’s success and what characteristics are NBA franchises overlooking? Applied Economics Letters, 25(5), 300–304. https://doi.org/10.1080/13504851.2017.1319551
+
+Zhang S, Lorenzo A, Gómez MA, Mateus N, Gonçalves B, Sampaio J. Clustering performances in the NBA according to players' anthropometric attributes and playing experience. J Sports Sci. 2018 Nov;36(22):2511-2520. doi: 10.1080/02640414.2018.1466493. Epub 2018 Apr 20. PMID: 29676222.
+\newline
+\newline
+\newline
+\newline
+
+**Appendix**
+
+```{r, echo=FALSE}
+pairs(final_df) #Scatterplot matrices for each variable
+cor(final_df) #correlation matrix
+
+par(mfrow=c(2,2))
+plot(final_df$APG, df.final[,2], xlab='Assists Per Game', 
+     ylab='dfbeta', main = "AIC APG")
+lines(lowess(final_df$APG, df.final[,2]), lwd=2, col='blue')
+abline(h=0, lty='dotted')
+abline(h=-2/sqrt(nrow(df.final)), lty='dotted')
+abline(h=2/sqrt(nrow(df.final)), lty='dotted')
+
+plot(final_df$APG, df.final2[,2], xlab='Assists Per Game', 
+     ylab='dfbeta', main = "BIC APG")
+lines(lowess(final_df$APG, df.final2[,2]), lwd=2, col='blue')
+abline(h=0, lty='dotted')
+abline(h=-2/sqrt(nrow(df.final)), lty='dotted')
+abline(h=2/sqrt(nrow(df.final)), lty='dotted')
+
+plot(final_df$BPG, df.final[,3], xlab='Blocks Per Game', 
+     ylab='dfbeta', main = "AIC BPG")
+lines(lowess(final_df$BPG, df.final[,3]), lwd=2, col='blue')
+abline(h=0, lty='dotted')
+abline(h=-2/sqrt(nrow(df.final)), lty='dotted')
+abline(h=2/sqrt(nrow(df.final)), lty='dotted')
+
+plot(final_df$BPG, df.final2[,3], xlab='Blocks Per Game', 
+     ylab='dfbeta', main = "BIC BPG")
+lines(lowess(final_df$BPG, df.final2[,3]), lwd=2, col='blue')
+abline(h=0, lty='dotted')
+abline(h=-2/sqrt(nrow(df.final)), lty='dotted')
+abline(h=2/sqrt(nrow(df.final)), lty='dotted')
+```
+
